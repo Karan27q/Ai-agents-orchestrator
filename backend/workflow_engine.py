@@ -18,6 +18,7 @@ except ImportError:
 from database import get_db_context
 
 import models
+import llm_cache
 
 # Global HTTP client pool for connection reuse (critical for throughput)
 _http_client: Optional[httpx.AsyncClient] = None
@@ -248,6 +249,9 @@ class WorkflowExecutionEngine:
                 return {"text": f"[Mock LLM Response]: {resolved_prompt}"}
 
             try:
+                cached = llm_cache.get("gemini-1.5-flash", "", resolved_prompt)
+                if cached is not None:
+                    return {"text": cached}
                 genai.configure(api_key=gemini_key)
                 model = genai.GenerativeModel("gemini-1.5-flash")
                 loop = asyncio.get_event_loop()
@@ -255,6 +259,7 @@ class WorkflowExecutionEngine:
                     None,
                     lambda: model.generate_content(resolved_prompt)
                 )
+                llm_cache.set("gemini-1.5-flash", "", resolved_prompt, response.text)
                 return {"text": response.text}
             except Exception as e:
                 self.log(f"Gemini execution failed: {str(e)}")

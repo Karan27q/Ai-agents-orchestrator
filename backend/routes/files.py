@@ -79,10 +79,8 @@ def process_file_in_background(db_session_factory, document_id: int, file_path: 
                 chunks.append(text[start:end])
                 start += chunk_size - overlap
 
-        # 3. Generate embeddings & Store in vector store
-        for chunk in chunks:
-            if chunk.strip():
-                vector_store.store_chunk(db, doc.id, chunk)
+        # 3. Batch embeddings & single commit
+        vector_store.store_chunks_batch(db, doc.id, chunks)
                 
         doc.embedding_status = "completed"
         db.commit()

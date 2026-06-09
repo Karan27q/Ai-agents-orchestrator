@@ -157,6 +157,13 @@ app.include_router(observability.router, prefix="/api/v1")
 @app.on_event("startup")
 async def startup_tasks():
     await start_queue_worker()
+    from database import SessionLocal
+    import vector_store
+    db = SessionLocal()
+    try:
+        vector_store.warm_faiss_index(db)
+    finally:
+        db.close()
 
 # Mount static files for frontend (Must be mounted after API routes)
 frontend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../frontend"))
