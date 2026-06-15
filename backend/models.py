@@ -162,3 +162,150 @@ class UserToken(Base):
         Index('ix_user_token_type', 'user_id', 'token_type'),
         Index('ix_user_token_expires', 'expires_at'),
     )
+
+class QueueTask(Base):
+    """Persistent task queue with retry logic, timeouts, and dead-letter handling."""
+    __tablename__ = "queue_tasks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    
+    # Task identification
+    task_type = Column(String, nullable=False, index=True)  # e.g., "workflow_run", "document_embed"
+    payload = Column(Text, nullable=False)  # JSON-serialized task data
+    
+    # Status tracking
+    status = Column(String, default="pending", index=True)  # pending, running, completed, failed, dead_letter
+    
+    # Retry logic
+    retry_count = Column(Integer, default=0, index=True)
+    max_retries = Column(Integer, default=3)
+    
+    # Timing
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, index=True)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    timeout_seconds = Column(Integer, default=300)  # 5 minutes default
+    
+    # Results & error handling
+    result = Column(Text, nullable=True)  # JSON-serialized result
+    error_message = Column(Text, nullable=True)
+    error_traceback = Column(Text, nullable=True)
+    
+    # Progress tracking
+    progress_percent = Column(Integer, default=0)
+    progress_message = Column(String, nullable=True)
+    
+    # Webhook callback for progress/completion
+    webhook_url = Column(String, nullable=True)  # URL to POST progress/completion updates
+    
+    # Relationship context
+    workflow_run_id = Column(Integer, ForeignKey("workflow_runs.id", ondelete="SET NULL"), nullable=True, index=True)
+    document_id = Column(Integer, ForeignKey("documents.id", ondelete="SET NULL"), nullable=True, index=True)
+    
+    # Composite indexes for efficient queries
+    __table_args__ = (
+        Index('ix_queue_status_created', 'status', 'created_at'),
+        Index('ix_queue_status_retry', 'status', 'retry_count'),
+        Index('ix_queue_workflow_run', 'workflow_run_id'),
+    )
+
+
+# ============================================================================
+# IAM (Identity & Access Management) Models - Role-Based Access Control
+# ============================================================================
+
+class Role(Base):
+    """System roles for RBAC."""
+    __tablename__ = "roles"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, unique=True, nullable=False, index=True)  # e.g., "Admin", "Workflow Manager", "Editor", "Viewer"
+    description = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, index=True)
+    
+    permissions = relationship("Permission", secondary="role_permissions", back_populates="roles")
+    
+    __table_args__ = (
+        Index('ix_role_name', 'name'),
+    )
+
+
+class Permission(Base):
+    """Fine-grained permissions (e.g., "workflow:create", "file:read")."""
+    __tablename__ = "permissions"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    resource = Column(String, nullable=False, index=True)  # e.g., "workflow", "file", "organization"
+    action = Column(String, nullable=False, index=True)     # e.g., "create", "read", "update", "delete"
+    description = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    
+    roles = relationship("Role", secondary="role_permissions", back_populates="permissions")
+    
+    __table_args__ = (
+        Index('ix_permission_resource_action', 'resource', 'action'),
+    )
+
+
+class RolePermission(Base):
+    """Junction table: roles <-> permissions (many-to-many)."""
+    __tablename__ = "role_permissions"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    role_id = Column(Integer, ForeignKey("roles.id", ondelete="CASCADE"), nullable=False, index=True)
+    permission_id = Column(Integer, ForeignKey("permissions.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    
+    __table_args__ = (
+        Index('ix_role_permission', 'role_id', 'permission_id'),
+    )
+
+
+class ResourcePermission(Base):
+    """
+    Resource-level permissions (e.g., User A can access Workflow B).
+    Allows overriding default role-based permissions for specific resources.
+    """
+    __tablename__ = "resource_permissions"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    resource_type = Column(String, nullable=False, index=True)  # e.g., "workflow", "document"
+    resource_id = Column(Integer, nullable=False, index=True)
+    permission = Column(String, nullable=False)  # e.g., "read", "write", "delete"
+    granted_by = Column(Integer, ForeignKey("users.id"), nullable=True)  # Who granted this permission
+    granted_at = Column(DateTime, default=datetime.datetime.utcnow, index=True)
+    expires_at = Column(DateTime, nullable=True)  # Optional expiration
+    
+    user = relationship("User", foreign_keys=[user_id], backref="resource_permissions")
+    granted_by_user = relationship("User", foreign_keys=[granted_by])
+    
+    __table_args__ = (
+        Index('ix_resource_permission_user', 'user_id', 'resource_type', 'resource_id'),
+        Index('ix_resource_permission_resource', 'resource_type', 'resource_id'),
+    )
+
+
+class AuditLog(Base):
+    """
+    Audit trail for compliance and security: who did what, when, and the result.
+    """
+    __tablename__ = "audit_logs"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    action = Column(String, nullable=False, index=True)  # e.g., "workflow:create", "user:login", "permission:grant"
+    resource_type = Column(String, nullable=True, index=True)  # e.g., "workflow", "user", "document"
+    resource_id = Column(Integer, nullable=True)
+    status = Column(String, default="success", index=True)  # success, failure
+    details = Column(Text, nullable=True)  # JSON: additional context
+    ip_address = Column(String, nullable=True)
+    user_agent = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, index=True)
+    
+    user = relationship("User")
+    
+    __table_args__ = (
+        Index('ix_audit_user_created', 'user_id', 'created_at'),
+        Index('ix_audit_action_created', 'action', 'created_at'),
+    )

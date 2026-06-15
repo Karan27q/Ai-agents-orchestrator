@@ -32,8 +32,8 @@ except ImportError:
 
 from database import engine, Base
 from rate_limiter import limiter
-from task_queue import start_queue_worker
-from routes import auth, workflows, agents, files, search, notifications, ws, observability
+from task_queue import start_queue_workers
+from routes import auth, workflows, agents, files, search, notifications, ws, observability, tasks, iam
 
 # Create database tables if they do not exist
 Base.metadata.create_all(bind=engine)
@@ -153,10 +153,15 @@ app.include_router(search.router, prefix="/api/v1")
 app.include_router(notifications.router, prefix="/api/v1")
 app.include_router(ws.router, prefix="/api/v1")
 app.include_router(observability.router, prefix="/api/v1")
+app.include_router(tasks.router, prefix="/api/v1")
+app.include_router(iam.router, prefix="/api/v1")
 
 @app.on_event("startup")
 async def startup_tasks():
-    await start_queue_worker()
+    # Start persistent task queue workers
+    await start_queue_workers()
+    
+    # Warm up FAISS vector index
     from database import SessionLocal
     import vector_store
     db = SessionLocal()

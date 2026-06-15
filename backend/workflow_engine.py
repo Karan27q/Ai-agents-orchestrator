@@ -19,6 +19,7 @@ from database import get_db_context
 
 import models
 import llm_cache
+import error_handler
 
 # Global HTTP client pool for connection reuse (critical for throughput)
 _http_client: Optional[httpx.AsyncClient] = None
@@ -223,6 +224,25 @@ class WorkflowExecutionEngine:
                 
                 try:
                     resp_json = response.json()
+                    
+                    # Log error responses with categorization
+                    if response.status_code >= 400:
+                        category, desc = error_handler.categorize_http_error(response.status_code, response.text[:200])
+                        self.log(f"[HTTP {category.value.upper()}] {response.status_code}: {desc}")
+                        return {
+                            "status_code": response.status_code,
+                            "data": resp_json,
+                            "error": {
+                                "category": category.value,
+                                "description": desc,
+                                "is_retryable": category in [
+                                    error_handler.ErrorCategory.TRANSIENT,
+                                    error_handler.ErrorCategory.RATE_LIMITED,
+                                    error_handler.ErrorCategory.TIMEOUT,
+                                ],
+                            }
+                        }
+                    
                     return {
                         "status_code": response.status_code,
                         "data": resp_json
@@ -232,9 +252,21 @@ class WorkflowExecutionEngine:
                         "status_code": response.status_code,
                         "text": response.text[:1000]  # Limit response size
                     }
-            except httpx.TimeoutException:
+            except httpx.TimeoutException as e:
+                error_obj = error_handler.WorkflowError(
+                    message=f"HTTP request timeout to {url}",
+                    category=error_handler.ErrorCategory.TIMEOUT,
+                    original_error=e,
+                )
+                self.log(f"[TIMEOUT] {error_obj.message}")
                 raise RuntimeError(f"HTTP request timeout to {url}")
             except Exception as e:
+                error_obj = error_handler.WorkflowError(
+                    message=f"HTTP request failed: {str(e)}",
+                    category=error_handler.ErrorCategory.TRANSIENT,
+                    original_error=e,
+                )
+                self.log(f"[HTTP ERROR] {str(e)}")
                 raise RuntimeError(f"HTTP request failed: {str(e)}")
                     
         elif node_type == "llm_prompt":
@@ -245,25 +277,66 @@ class WorkflowExecutionEngine:
             
             gemini_key = os.getenv("GEMINI_API_KEY")
             if not HAS_GENAI or not gemini_key:
+                self.log("[INFO] Gemini not configured, using mock response")
                 await asyncio.sleep(1.5)
                 return {"text": f"[Mock LLM Response]: {resolved_prompt}"}
 
-            try:
-                cached = llm_cache.get("gemini-1.5-flash", "", resolved_prompt)
-                if cached is not None:
-                    return {"text": cached}
-                genai.configure(api_key=gemini_key)
-                model = genai.GenerativeModel("gemini-1.5-flash")
-                loop = asyncio.get_event_loop()
-                response = await loop.run_in_executor(
-                    None,
-                    lambda: model.generate_content(resolved_prompt)
+            # Try models in priority order
+            last_error = None
+            for model_name in error_handler.get_available_gemini_models():
+                try:
+                    # Check cache first
+                    cached = llm_cache.get(model_name, "", resolved_prompt)
+                    if cached is not None:
+                        self.log(f"[CACHE HIT] Using cached response for {model_name}")
+                        return {"text": cached}
+                    
+                    self.log(f"[LLM] Trying model: {model_name}")
+                    genai.configure(api_key=gemini_key)
+                    model = genai.GenerativeModel(model_name)
+                    loop = asyncio.get_event_loop()
+                    response = await loop.run_in_executor(
+                        None,
+                        lambda: model.generate_content(resolved_prompt)
+                    )
+                    
+                    # Success - cache and return
+                    llm_cache.set(model_name, "", resolved_prompt, response.text)
+                    self.log(f"[SUCCESS] LLM response from {model_name} ({len(response.text)} chars)")
+                    return {"text": response.text}
+                
+                except Exception as e:
+                    last_error = e
+                    category, description = error_handler.categorize_gemini_error(e)
+                    self.log(f"[{category.value.upper()}] {model_name}: {description}")
+                    
+                    # If permanent error and not model unavailable, don't try other models
+                    if category == error_handler.ErrorCategory.PERMANENT and category != error_handler.ErrorCategory.MODEL_UNAVAILABLE:
+                        break
+                    # If model unavailable, try next one
+                    if category == error_handler.ErrorCategory.MODEL_UNAVAILABLE:
+                        continue
+                    # For other errors, stop trying
+                    break
+            
+            # All models failed - return structured error
+            if last_error:
+                error_obj = error_handler.WorkflowError(
+                    message=f"All LLM models failed",
+                    category=error_handler.categorize_gemini_error(last_error)[0],
+                    original_error=last_error,
+                    context={
+                        "attempted_models": error_handler.get_available_gemini_models(),
+                        "prompt_length": len(resolved_prompt),
+                    }
                 )
-                llm_cache.set("gemini-1.5-flash", "", resolved_prompt, response.text)
-                return {"text": response.text}
-            except Exception as e:
-                self.log(f"Gemini execution failed: {str(e)}")
-                return {"text": f"[Gemini fallback response due to error: {str(e)}]"}
+                self.log(f"[ERROR] LLM Failed: {json.dumps(error_obj.to_dict(), indent=2)}")
+                return {
+                    "text": "[LLM Error]",
+                    "error": error_obj.to_dict(),
+                    "is_retryable": error_obj.is_retryable(),
+                }
+            
                 
         elif node_type == "delay":
             seconds = int(node_data.get("seconds", 1))
