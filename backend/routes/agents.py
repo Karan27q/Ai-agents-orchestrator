@@ -1,5 +1,5 @@
 import json
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -31,6 +31,7 @@ class AgentTaskResponse(BaseModel):
 @router.post("/research")
 @limiter.limit("20/minute")
 async def start_research(
+    request: Request,
     req: ResearchRequest,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.require_manager)

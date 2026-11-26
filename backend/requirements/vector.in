@@ -1,0 +1,4 @@
+# Optional ANN index. Without this the app uses the numpy brute-force path
+# in backend/vector_store.py, which is fine for small corpora.
+-r base.in
+faiss-cpu>=1.7.4

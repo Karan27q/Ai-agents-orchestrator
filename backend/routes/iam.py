@@ -2,7 +2,7 @@
 IAM Routes - Role and Permission Management
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, Request, status, Query
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List, Optional
@@ -43,7 +43,7 @@ class RoleResponse(BaseModel):
 
 class RoleAssignRequest(BaseModel):
     user_id: int
-    role: str  # "Admin", "Workflow Manager", "Editor", "Viewer"
+    role: str  # one of auth.ALL_ROLES
 
 
 class ResourcePermissionRequest(BaseModel):
@@ -108,7 +108,7 @@ async def get_user_permissions(
     Get all permissions for a user (role-based + resource-specific).
     Only Admin or the user themselves can view this.
     """
-    if current_user.role != "Admin" and current_user.id != user_id:
+    if not auth.is_admin(current_user) and current_user.id != user_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You can only view your own permissions",
@@ -135,6 +135,7 @@ async def get_user_permissions(
 @router.post("/users/{user_id}/role", response_model=dict)
 @limiter.limit("10/minute")
 async def assign_user_role(
+    request: Request,
     user_id: int,
     req: RoleAssignRequest,
     current_user: models.User = Depends(auth.get_current_user),
@@ -143,7 +144,7 @@ async def assign_user_role(
     """
     Assign a role to a user. Only Admin can do this.
     """
-    if current_user.role != "Admin":
+    if not auth.is_admin(current_user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only administrators can assign roles",
@@ -154,13 +155,21 @@ async def assign_user_role(
         raise HTTPException(status_code=404, detail="User not found")
     
     # Validate role
-    valid_roles = ["Admin", "Workflow Manager", "Editor", "Viewer"]
+    valid_roles = list(auth.ALL_ROLES)
     if req.role not in valid_roles:
         raise HTTPException(
             status_code=400,
             detail=f"Invalid role. Must be one of: {', '.join(valid_roles)}",
         )
-    
+
+    # Only a Super Admin may mint another Super Admin.
+    if req.role == auth.ROLE_SUPER_ADMIN and current_user.role != auth.ROLE_SUPER_ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only a Super Admin can assign the Super Admin role",
+        )
+
+    old_role = user.role
     user.role = req.role
     db.commit()
     
@@ -171,7 +180,7 @@ async def assign_user_role(
         "user:role_assign",
         "user",
         user_id,
-        details={"old_role": user.role, "new_role": req.role},
+        details={"old_role": old_role, "new_role": req.role},
     )
     
     return {"message": f"User role updated to {req.role}", "user_id": user_id}
@@ -184,6 +193,7 @@ async def assign_user_role(
 @router.post("/permissions/resource", response_model=ResourcePermissionResponse)
 @limiter.limit("20/minute")
 async def grant_resource_permission(
+    request: Request,
     req: ResourcePermissionRequest,
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
@@ -192,7 +202,7 @@ async def grant_resource_permission(
     Grant a user specific permission on a resource.
     Only Admin or resource owner can grant permissions.
     """
-    if current_user.role != "Admin":
+    if not auth.is_admin(current_user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only administrators can grant resource permissions",
@@ -254,6 +264,7 @@ async def grant_resource_permission(
 @router.delete("/permissions/resource/{permission_id}")
 @limiter.limit("20/minute")
 async def revoke_resource_permission(
+    request: Request,
     permission_id: int,
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
@@ -261,7 +272,7 @@ async def revoke_resource_permission(
     """
     Revoke a resource permission. Only Admin can do this.
     """
-    if current_user.role != "Admin":
+    if not auth.is_admin(current_user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only administrators can revoke permissions",
@@ -304,14 +315,14 @@ async def list_resource_permissions(
     """
     query = db.query(models.ResourcePermission)
     
-    if current_user.role != "Admin":
+    if not auth.is_admin(current_user):
         query = query.filter(models.ResourcePermission.user_id == current_user.id)
     
     if resource_type:
         query = query.filter(models.ResourcePermission.resource_type == resource_type)
     if resource_id:
         query = query.filter(models.ResourcePermission.resource_id == resource_id)
-    if user_id and current_user.role == "Admin":
+    if user_id:
         query = query.filter(models.ResourcePermission.user_id == user_id)
     
     return query.all()
@@ -335,7 +346,7 @@ async def list_audit_logs(
     List audit logs with optional filtering.
     Only Admin can view audit logs.
     """
-    if current_user.role != "Admin":
+    if not auth.is_admin(current_user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only administrators can view audit logs",
@@ -364,7 +375,7 @@ async def get_audit_stats(
     """
     Get audit statistics. Only Admin can view.
     """
-    if current_user.role != "Admin":
+    if not auth.is_admin(current_user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only administrators can view audit statistics",

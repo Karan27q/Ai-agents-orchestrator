@@ -1,4 +1,3 @@
-import os
 import threading
 from typing import List, Optional, Tuple
 
@@ -12,20 +11,10 @@ except ImportError:
     faiss = None
     HAS_FAISS = False
 
-try:
-    import google.generativeai as genai
-    HAS_GENAI = True
-except ImportError:
-    genai = None
-    HAS_GENAI = False
-
+import gemini_client
 import models
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-EMBED_DIM = 768
-EMBED_BATCH_SIZE = 100
-if HAS_GENAI and GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
+EMBED_DIM = gemini_client.EMBED_DIM
 
 _index_lock = threading.RLock()
 _faiss_index = None
@@ -46,33 +35,24 @@ def _chunk_to_vec(embedding) -> np.ndarray:
 
 
 def get_embedding(text: str) -> np.ndarray:
-  embeddings = get_embeddings_batch([text])
+  embeddings = get_embeddings_batch([text], task_type="RETRIEVAL_QUERY")
   return embeddings[0] if embeddings else _mock_embedding(text)
 
 
-def get_embeddings_batch(texts: List[str]) -> List[np.ndarray]:
+def get_embeddings_batch(
+    texts: List[str], task_type: str = "RETRIEVAL_DOCUMENT"
+) -> List[np.ndarray]:
     if not texts:
         return []
 
-    if not HAS_GENAI or not GEMINI_API_KEY:
+    if not gemini_client.is_configured():
         return [_mock_embedding(t) for t in texts]
 
-    results: List[np.ndarray] = []
     try:
-        for i in range(0, len(texts), EMBED_BATCH_SIZE):
-            batch = texts[i : i + EMBED_BATCH_SIZE]
-            response = genai.embed_content(
-                model="models/text-embedding-004",
-                content=batch,
-                task_type="retrieval_document",
-            )
-            embs = response["embedding"]
-            if batch and isinstance(embs[0], (int, float)):
-                results.append(np.array(embs, dtype=np.float32))
-            else:
-                for e in embs:
-                    results.append(np.array(e, dtype=np.float32))
-        return results
+        vectors = gemini_client.embed_texts(
+            texts, task_type=task_type, dimensions=EMBED_DIM
+        )
+        return [np.array(v, dtype=np.float32) for v in vectors]
     except Exception as e:
         print(f"Gemini batch embedding error: {e}. Falling back to per-chunk mock.")
         return [_mock_embedding(t) for t in texts]

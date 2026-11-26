@@ -13,7 +13,7 @@ Your workflow engine now has **intelligent, categorized error handling** that di
 | Aspect | Before | After |
 |--------|--------|-------|
 | **Error Categorization** | Generic Exception | 7 specific categories |
-| **Model Fallback** | Hard-coded `gemini-1.5-flash` | Auto-fallback chain (3 models) |
+| **Model Fallback** | Hard-coded `gemini-1.5-flash` | Auto-fallback chain (`gemini-4-hydrogen` → `gemini-3.5-flash-lite`) |
 | **Retry Logic** | None - silent failure | Smart retries based on error type |
 | **Error Context** | Just error message | Full context (node, attempt, category) |
 | **Logging** | Cryptic exception strings | Structured, actionable logs |
@@ -43,9 +43,9 @@ Request/execution timeout exceeded
 
 ### 4. **MODEL_UNAVAILABLE** (Retry-able + Smart Fallback)
 ```
-Error: "models/gemini-1.5-flash not found"
+Error: "models/gemini-4-hydrogen not found"
 → Auto-fallback to next model in chain
-   [gemini-1.5-pro] → [gemini-1.5-flash] → [gemini-pro]
+   [gemini-4-hydrogen] → [gemini-3.5-flash-lite]
 ```
 
 ### 5. **AUTH_ERROR** (Permanent - Fail Fast)
@@ -74,18 +74,16 @@ Unclassified errors
 
 **Before:**
 ```
-[2026-06-15 10:24:09] Gemini execution failed: 404 models/gemini-1.5-flash is not found
+[2026-06-15 10:24:09] Gemini execution failed: 404 models/gemini-4-hydrogen is not found
 [2026-06-15 10:24:09] Node 'node_llm_prompt_8349' completed. Output: {'text': '[Gemini fallback response due to error: 404...]'}
 ```
 
 **After:**
 ```
-[2026-06-15 10:24:09] [LLM] Trying model: gemini-1.5-pro
-[2026-06-15 10:24:09] [MODEL_UNAVAILABLE] gemini-1.5-pro: Model not available in v1beta. Try gemini-pro or gemini-1.5-pro
-[2026-06-15 10:24:09] [LLM] Trying model: gemini-1.5-flash
-[2026-06-15 10:24:09] [MODEL_UNAVAILABLE] gemini-1.5-flash: Model not available in v1beta...
-[2026-06-15 10:24:09] [LLM] Trying model: gemini-pro
-[2026-06-15 10:24:09] [SUCCESS] LLM response from gemini-pro (1247 chars)
+[2026-06-15 10:24:09] [LLM] Trying model: gemini-4-hydrogen
+[2026-06-15 10:24:09] [MODEL_UNAVAILABLE] gemini-4-hydrogen: Model not available. Check the model id against the current Gemini model list.
+[2026-06-15 10:24:09] [LLM] Trying model: gemini-3.5-flash-lite
+[2026-06-15 10:24:09] [SUCCESS] LLM response from gemini-3.5-flash-lite (1247 chars)
 ```
 
 ### Example 2: HTTP Request with Error Categorization
@@ -114,7 +112,7 @@ HTTP request failed: 429 Rate limit exceeded
         "is_retryable": True,
         "timestamp": "2026-06-15T10:24:09.123456",
         "context": {
-            "attempted_models": ["gemini-1.5-pro", "gemini-1.5-flash", "gemini-pro"],
+            "attempted_models": ["gemini-4-hydrogen", "gemini-3.5-flash-lite"],
             "prompt_length": 256
         }
     }
@@ -155,10 +153,10 @@ New structured log format makes debugging easier:
 [TIMESTAMP] [LEVEL] [CATEGORY] NODE_ID: Message
 
 Examples:
-[2026-06-15 10:24:09] [LLM] Trying model: gemini-pro
+[2026-06-15 10:24:09] [LLM] Trying model: gemini-4-hydrogen
 [2026-06-15 10:24:09] [CACHE HIT] Using cached response
 [2026-06-15 10:24:09] [SUCCESS] LLM response (1247 chars)
-[2026-06-15 10:24:09] [MODEL_UNAVAILABLE] gemini-pro: Model not found
+[2026-06-15 10:24:09] [MODEL_UNAVAILABLE] gemini-4-hydrogen: Model not found
 [2026-06-15 10:24:09] [HTTP RATE_LIMITED] 429: Rate limited - retry later
 [2026-06-15 10:24:09] [AUTH ERROR] Invalid API key
 [2026-06-15 10:24:09] [TIMEOUT] Request exceeded 30s timeout
@@ -172,22 +170,16 @@ Examples:
 When primary model fails, automatically tries alternatives:
 
 ```
-gemini-1.5-pro      (Recommended - latest, most capable)
-    ↓ (if unavailable)
-gemini-1.5-flash    (Free tier alternative)
-    ↓ (if unavailable)
-gemini-pro          (Legacy fallback)
+gemini-4-hydrogen      (Default general-purpose, 1M context)
+    ↓ (if unavailable or rate limited)
+gemini-3.5-flash-lite  (Fastest, lowest-cost fallback)
     ↓ (all failed)
 Return structured error with retry flag
 ```
 
-**To customize**, edit [backend/error_handler.py](error_handler.py#L85):
-```python
-GEMINI_MODEL_FALLBACKS = [
-    "your-model-1",
-    "your-model-2",
-    "your-model-3",
-]
+**To customize**, set `GEMINI_MODELS` (comma-separated) or edit [backend/error_handler.py](backend/error_handler.py):
+```bash
+GEMINI_MODELS=gemini-4-carbon,gemini-4-hydrogen,gemini-3.5-flash-lite
 ```
 
 ---
@@ -246,18 +238,18 @@ Use this in monitoring/alerting:
 
 ### 1. Fix Your Gemini API Issue (Immediate)
 
-**Problem**: `gemini-1.5-flash` not found in v1beta
+**Problem**: `gemini-4-hydrogen` not found or not enabled for your key
 
 **Solution**: Test available models:
 ```bash
-python -c "import google.generativeai as genai; genai.configure(api_key='YOUR_KEY'); print([m.name for m in genai.list_models()])"
+python diagnose_gemini.py
 ```
 
-Then update [error_handler.py](error_handler.py#L85):
-```python
-GEMINI_MODEL_FALLBACKS = [
-    "gemini-pro",  # or whatever your API supports
-]
+Then pin a model your key supports:
+```bash
+GEMINI_MODEL=gemini-4-hydrogen
+# or override the whole fallback chain:
+GEMINI_MODELS=gemini-4-carbon,gemini-4-hydrogen,gemini-3.5-flash-lite
 ```
 
 ### 2. Integrate Task Queue Retries (Next)

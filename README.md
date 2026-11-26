@@ -26,15 +26,15 @@ The project is designed to run with minimal setup while providing enterprise-sty
 - FastAPI
 - SQLAlchemy ORM
 - SQLite / PostgreSQL
-- Google Gemini AI
+- Google Gemini 4 (`gemini-4-hydrogen`) via the REST API
 - JWT Authentication
 - Server-Sent Events (SSE)
 
 ## Frontend
-- React SPA
+- React 18 SPA
 - Tailwind CSS v4
-- Zero-build architecture
-- Browser-side JSX transpilation via Service Worker
+- Vite build (JSX compiled at build time)
+- Hash-locked dependencies via `package-lock.json`
 
 ## AI & Search
 - Multi-Agent Pipeline
@@ -55,9 +55,15 @@ ai-orchestrator/
 │   ├── database.py
 │   ├── auth.py
 │   ├── agents.py
+│   ├── gemini_client.py
 │   ├── vector_store.py
 │   ├── workflow_engine.py
 │   ├── requirements.txt
+│   ├── requirements/
+│   │   ├── base.in / base.txt
+│   │   ├── postgres.in / postgres.txt
+│   │   ├── vector.in / vector.txt
+│   │   └── dev.in / dev.txt
 │   └── routes/
 │       ├── auth.py
 │       ├── agents.py
@@ -67,15 +73,22 @@ ai-orchestrator/
 │
 ├── frontend/
 │   ├── index.html
-│   ├── sw.js
-│   ├── app.js
+│   ├── index.css
+│   ├── app.jsx
+│   ├── config.js
+│   ├── vite.config.js
+│   ├── package.json
 │   └── components/
-│       ├── auth/
-│       ├── workflow/
-│       ├── research/
-│       ├── search/
-│       └── files/
+│       ├── auth.jsx
+│       ├── dashboard.jsx
+│       ├── home.jsx
+│       ├── workflows.jsx
+│       ├── research.jsx
+│       ├── files.jsx
+│       └── search.jsx
 │
+├── Dockerfile
+├── .dockerignore
 ├── .gitignore
 ├── .env.example
 └── README.md
@@ -115,6 +128,22 @@ Visit:
 https://aistudio.google.com/
 
 Generate a new API key and paste it into the `.env` file.
+
+### Gemini models
+
+The defaults target the current model generation:
+
+```env
+GEMINI_MODEL=gemini-4-hydrogen        # default general-purpose model
+GEMINI_EMBED_MODEL=gemini-embedding-2 # multimodal embedding model
+GEMINI_EMBED_DIM=768                  # must match the DB vector dimension
+GEMINI_MODELS=gemini-4-hydrogen,gemini-3.5-flash-lite  # fallback chain
+```
+
+Use `python diagnose_gemini.py` to check which models your key can access.
+If you switch `GEMINI_EMBED_MODEL` (or its dimension), re-index uploaded
+documents: embedding spaces differ between models, so old vectors cannot be
+compared with new ones.
 
 ---
 
@@ -188,8 +217,36 @@ source venv/bin/activate
 
 ## Install Dependencies
 
+Dependencies are split into pinned, hash-locked sets:
+
+| File | Contents |
+|---|---|
+| `requirements/base.txt` | Core runtime (SQLite deployments) |
+| `requirements/postgres.txt` | base + `psycopg2-binary` + `pgvector` |
+| `requirements/vector.txt` | base + `faiss-cpu` (optional ANN index) |
+| `requirements/dev.txt` | base + `pytest` |
+
+Install the default set:
+
 ```bash
-pip install -r requirements.txt
+pip install --require-hashes -r requirements.txt
+```
+
+Or pick what you need:
+
+```bash
+pip install --require-hashes -r requirements/postgres.txt
+pip install --require-hashes -r requirements/vector.txt
+```
+
+Without `faiss-cpu` the app automatically uses the numpy brute-force
+similarity path in `backend/vector_store.py`.
+
+The lock files are generated from the `*.in` files:
+
+```bash
+uv pip compile requirements/base.in --universal --generate-hashes \
+    --python-version 3.10 -o requirements/base.txt
 ```
 
 ---
@@ -212,15 +269,23 @@ The SQLite database will be created automatically.
 
 # 🎨 Frontend Setup
 
-Because the frontend uses a Service Worker for browser-side JSX compilation, it must be served through an HTTP server.
+The frontend is a standard Vite + React app. JSX is compiled at build time;
+there is no runtime Babel or service-worker transpilation.
 
 ---
 
-## Option A (Recommended)
-
-Run backend:
+## Option A (Recommended) — build once, serve from FastAPI
 
 ```bash
+cd frontend
+npm ci
+npm run build
+```
+
+Start the backend:
+
+```bash
+cd ../backend
 python main.py
 ```
 
@@ -230,25 +295,52 @@ Open:
 http://localhost:8000
 ```
 
-FastAPI automatically serves frontend assets.
+FastAPI serves `frontend/dist` automatically. Set `FRONTEND_DIR` to point at a
+different build output.
 
 ---
 
-## Option B (Standalone Frontend)
+## Option B — Vite development server
 
 ```bash
 cd frontend
-
-python -m http.server 3000
+npm run dev
 ```
 
 Open:
 
 ```text
-http://localhost:3000
+http://localhost:5173
 ```
 
-Ensure backend is running on port 8000.
+Vite proxies `/api` to `http://localhost:8000`. Override the target with
+`VITE_BACKEND_URL`.
+
+---
+
+# 🐳 Docker
+
+```bash
+docker build -t ai-orchestrator .
+docker run --rm -p 8000:8000 --env-file backend/.env \
+  -v "$PWD/uploads:/app/backend/uploaded_files" \
+  ai-orchestrator
+```
+
+The image is a three-stage build:
+
+1. `node:22-slim` builds the frontend with Vite.
+2. `python:3.11-slim` installs the hash-locked Python dependencies into a venv.
+3. `python:3.11-slim` copies only the venv, backend and built frontend, then
+   runs as the non-root `app` user.
+
+Notes:
+
+- The default command uses a single worker because the FAISS index, caches and
+  WebSocket registry are in-process.
+- The Dockerfile installs `requirements/postgres.txt`. Switch to `base.txt` for
+  a SQLite-only image.
+- Bind-mount `orchestrator.db` if you need SQLite data to survive the container.
 
 ---
 

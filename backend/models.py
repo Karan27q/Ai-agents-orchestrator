@@ -2,12 +2,13 @@ import datetime
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, LargeBinary, Index
 from sqlalchemy.orm import relationship
 from database import Base, DATABASE_URL
+from gemini_client import EMBED_DIM
 
 if DATABASE_URL.startswith("sqlite"):
     EMBEDDING_TYPE = LargeBinary
 else:
     from pgvector.sqlalchemy import Vector
-    EMBEDDING_TYPE = lambda: Vector(768)
+    EMBEDDING_TYPE = lambda: Vector(EMBED_DIM)
 
 class Organization(Base):
     __tablename__ = "organizations"
@@ -219,7 +220,7 @@ class Role(Base):
     __tablename__ = "roles"
     
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, unique=True, nullable=False, index=True)  # e.g., "Admin", "Workflow Manager", "Editor", "Viewer"
+    name = Column(String, unique=True, nullable=False, index=True)  # e.g., "Super Admin", "Org Admin", "Research Manager", "Workflow Developer", "Viewer"
     description = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow, index=True)
     

@@ -36,16 +36,38 @@ class Action(Enum):
 
 
 class Role(Enum):
-    """Built-in roles."""
-    ADMIN = "Admin"
-    WORKFLOW_MANAGER = "Workflow Manager"
-    EDITOR = "Editor"
-    VIEWER = "Viewer"
+    """Built-in roles. Names must match auth.ROLE_* exactly."""
+    SUPER_ADMIN = auth.ROLE_SUPER_ADMIN
+    ORG_ADMIN = auth.ROLE_ORG_ADMIN
+    RESEARCH_MANAGER = auth.ROLE_RESEARCH_MANAGER
+    WORKFLOW_DEVELOPER = auth.ROLE_WORKFLOW_DEVELOPER
+    VIEWER = auth.ROLE_VIEWER
 
 
-# Default role permissions mapping
+# Default role permissions mapping (keys must match auth.ALL_ROLES)
 DEFAULT_ROLE_PERMISSIONS = {
-    "Admin": [
+    auth.ROLE_SUPER_ADMIN: [
+        ("workflow", "create"),
+        ("workflow", "read"),
+        ("workflow", "update"),
+        ("workflow", "delete"),
+        ("workflow", "execute"),
+        ("workflow", "share"),
+        ("document", "create"),
+        ("document", "read"),
+        ("document", "update"),
+        ("document", "delete"),
+        ("document", "share"),
+        ("organization", "read"),
+        ("organization", "update"),
+        ("organization", "delete"),
+        ("organization", "share"),
+        ("user", "read"),
+        ("user", "create"),
+        ("user", "update"),
+        ("user", "delete"),
+    ],
+    auth.ROLE_ORG_ADMIN: [
         ("workflow", "create"),
         ("workflow", "read"),
         ("workflow", "update"),
@@ -65,18 +87,18 @@ DEFAULT_ROLE_PERMISSIONS = {
         ("user", "update"),
         ("user", "delete"),
     ],
-    "Workflow Manager": [
+    auth.ROLE_RESEARCH_MANAGER: [
         ("workflow", "create"),
         ("workflow", "read"),
         ("workflow", "update"),
-        ("workflow", "delete"),
         ("workflow", "execute"),
         ("workflow", "share"),
         ("document", "read"),
         ("document", "create"),
         ("organization", "read"),
+        ("user", "read"),
     ],
-    "Editor": [
+    auth.ROLE_WORKFLOW_DEVELOPER: [
         ("workflow", "create"),
         ("workflow", "read"),
         ("workflow", "update"),
@@ -85,9 +107,8 @@ DEFAULT_ROLE_PERMISSIONS = {
         ("document", "create"),
         ("organization", "read"),
     ],
-    "Viewer": [
+    auth.ROLE_VIEWER: [
         ("workflow", "read"),
-        ("workflow", "execute"),
         ("document", "read"),
         ("organization", "read"),
     ],
@@ -113,8 +134,8 @@ async def check_permission(
     if not db:
         return False
     
-    # Admin always has access
-    if user.role == Role.ADMIN.value:
+    # Admins always have access
+    if auth.is_admin(user):
         return True
     
     # Check resource-level permissions first
@@ -197,7 +218,7 @@ def require_role(*roles: str):
     
     Usage:
         @router.post("/users")
-        @require_role("Admin", "Workflow Manager")
+        @require_role("Org Admin", "Research Manager")
         async def create_user(current_user: models.User = Depends(auth.get_current_user)):
             ...
     """

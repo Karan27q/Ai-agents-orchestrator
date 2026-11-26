@@ -147,3 +147,10 @@ Desktop.ini
 *.njsproj
 *.sln
 *.sw?
+
+# Frontend (Vite)
+frontend/node_modules/
+frontend/dist/
+
+# User uploads
+backend/uploaded_files/

@@ -3,7 +3,7 @@ import {
   BrainCircuit, Send, Play, Terminal, HelpCircle, FileText, 
   CheckCircle, ArrowRight, Clipboard, AlertCircle
 } from 'lucide-react';
-import { API_URL } from '../app.js';
+import { API_URL } from '../config.js';
 
 export function ResearchView({ apiFetch, user }) {
   const [topic, setTopic] = useState('');
@@ -152,12 +152,21 @@ export function ResearchView({ apiFetch, user }) {
     alert('Markdown report copied to clipboard!');
   };
 
+  // Escape HTML so model output can never inject markup or scripts.
+  const escapeHtml = (text) =>
+    text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+
   // Basic markdown compiler to render neat styling on the fly
   const renderMarkdown = (md) => {
     if (!md) return '';
-    
-    // Replace headers
-    let html = md
+
+    // Escape first, then add our own trusted markup on top.
+    let html = escapeHtml(md)
       .replace(/^### (.*$)/gim, '<h4 class="text-sm font-bold text-white mt-4 mb-2">$1</h4>')
       .replace(/^## (.*$)/gim, '<h3 class="text-base font-extrabold text-white border-b border-zinc-800 pb-2 mt-6 mb-3">$1</h3>')
       .replace(/^# (.*$)/gim, '<h2 class="text-lg font-black text-indigo-400 mt-8 mb-4">$1</h2>');
@@ -167,32 +176,32 @@ export function ResearchView({ apiFetch, user }) {
 
     // Replace linebreaks / paragraphs
     html = html.replace(/\n\n/g, '<div class="h-3"></div>');
-    
+
     // Replace bullet points
     html = html.replace(/^\- (.*$)/gim, '<li class="ml-4 list-disc text-zinc-300 mt-1">$1</li>');
 
-    return <div dangerouslySetInnerHTML={{ __html: html }} class="text-xs leading-relaxed text-zinc-300 space-y-2 select-text" />;
+    return <div dangerouslySetInnerHTML={{ __html: html }} className="text-xs leading-relaxed text-zinc-300 space-y-2 select-text" />;
   };
 
   return (
-    <div class="space-y-6 max-w-7xl mx-auto h-full flex flex-col">
+    <div className="space-y-6 max-w-7xl mx-auto h-full flex flex-col">
       {/* Header */}
       <div>
-        <h1 class="text-3xl font-extrabold text-white tracking-tight">Multi-Agent Research</h1>
-        <p class="text-zinc-400 mt-2 text-sm">Orchestrate a pipeline of 5 AI agents (Planner, Research, Critic, Writer, Citation) to compile deep reports.</p>
+        <h1 className="text-3xl font-extrabold text-white tracking-tight">Multi-Agent Research</h1>
+        <p className="text-zinc-400 mt-2 text-sm">Orchestrate a pipeline of 5 AI agents (Planner, Research, Critic, Writer, Citation) to compile deep reports.</p>
       </div>
 
-      <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         
         {/* Launch panel & past reports */}
-        <div class="space-y-6 lg:col-span-1">
+        <div className="space-y-6 lg:col-span-1">
           {/* Form */}
-          <div class="glass p-6 rounded-2xl space-y-4">
-            <h3 class="text-sm font-bold text-white">New Research Brief</h3>
+          <div className="glass p-6 rounded-2xl space-y-4">
+            <h3 className="text-sm font-bold text-white">New Research Brief</h3>
             
-            <form onSubmit={handleLaunchResearch} class="space-y-4">
+            <form onSubmit={handleLaunchResearch} className="space-y-4">
               <div>
-                <label class="block text-[10px] text-zinc-500 font-semibold uppercase mb-2">Research Question / Topic</label>
+                <label className="block text-[10px] text-zinc-500 font-semibold uppercase mb-2">Research Question / Topic</label>
                 <textarea
                   value={topic}
                   onChange={e => setTopic(e.target.value)}
@@ -200,28 +209,28 @@ export function ResearchView({ apiFetch, user }) {
                   rows="3"
                   required
                   placeholder="e.g., Deeptech startups funding trends in India for 2025"
-                  class="w-full bg-zinc-950/40 border border-zinc-800 rounded-xl p-3 text-zinc-200 text-xs focus:border-indigo-500 focus:outline-none placeholder-zinc-600 leading-relaxed"
+                  className="w-full bg-zinc-950/40 border border-zinc-800 rounded-xl p-3 text-zinc-200 text-xs focus:border-indigo-500 focus:outline-none placeholder-zinc-600 leading-relaxed"
                 />
               </div>
 
               <button
                 type="submit"
                 disabled={isResearching}
-                class="w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-xl text-xs transition-colors shadow-lg shadow-indigo-600/20 disabled:opacity-50"
+                className="w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-xl text-xs transition-colors shadow-lg shadow-indigo-600/20 disabled:opacity-50"
               >
-                <BrainCircuit class="w-4 h-4" />
+                <BrainCircuit className="w-4 h-4" />
                 <span>Launch Agentic Chain</span>
               </button>
             </form>
           </div>
 
           {/* Past reports */}
-          <div class="glass p-6 rounded-2xl flex flex-col max-h-[300px]">
-            <h3 class="text-sm font-bold text-white mb-4 border-b border-zinc-800/80 pb-3">Research Archives</h3>
+          <div className="glass p-6 rounded-2xl flex flex-col max-h-[300px]">
+            <h3 className="text-sm font-bold text-white mb-4 border-b border-zinc-800/80 pb-3">Research Archives</h3>
             
-            <div class="overflow-y-auto space-y-2 flex-1 pr-1">
+            <div className="overflow-y-auto space-y-2 flex-1 pr-1">
               {pastTasks.length === 0 ? (
-                <p class="text-[11px] text-zinc-500 text-center py-6">No archived research found.</p>
+                <p className="text-[11px] text-zinc-500 text-center py-6">No archived research found.</p>
               ) : (
                 pastTasks.map(task => {
                   let payload = {};
@@ -234,12 +243,12 @@ export function ResearchView({ apiFetch, user }) {
                         setViewingTask(task);
                         setReportMarkdown('');
                       }}
-                      class="w-full text-left p-2.5 bg-zinc-950/20 hover:bg-zinc-800/40 rounded-xl border border-zinc-800/50 flex flex-col gap-1 transition-all"
+                      className="w-full text-left p-2.5 bg-zinc-950/20 hover:bg-zinc-800/40 rounded-xl border border-zinc-800/50 flex flex-col gap-1 transition-all"
                     >
-                      <p class="text-[11px] font-bold text-white truncate">{payload.topic || 'Research Task'}</p>
-                      <div class="flex items-center justify-between text-[9px] text-zinc-500">
+                      <p className="text-[11px] font-bold text-white truncate">{payload.topic || 'Research Task'}</p>
+                      <div className="flex items-center justify-between text-[9px] text-zinc-500">
                         <span>{new Date(task.created_at).toLocaleDateString()}</span>
-                        <span class="text-indigo-400 font-bold uppercase">{task.status}</span>
+                        <span className="text-indigo-400 font-bold uppercase">{task.status}</span>
                       </div>
                     </button>
                   );
@@ -250,35 +259,35 @@ export function ResearchView({ apiFetch, user }) {
         </div>
 
         {/* Live streaming display screen */}
-        <div class="lg:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-6 h-[550px]">
+        <div className="lg:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-6 h-[550px]">
           
           {/* Agent Console */}
-          <div class="glass rounded-2xl p-5 flex flex-col h-full bg-zinc-950/60 overflow-hidden">
-            <h3 class="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-3 flex items-center gap-2">
-              <Terminal class="w-4 h-4 text-indigo-400" />
+          <div className="glass rounded-2xl p-5 flex flex-col h-full bg-zinc-950/60 overflow-hidden">
+            <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-3 flex items-center gap-2">
+              <Terminal className="w-4 h-4 text-indigo-400" />
               <span>Orchestrator Logs</span>
             </h3>
 
-            <div class="flex-1 overflow-y-auto space-y-2.5 pr-2 font-mono text-[10px] py-1 border-t border-zinc-800/50 pt-3">
+            <div className="flex-1 overflow-y-auto space-y-2.5 pr-2 font-mono text-[10px] py-1 border-t border-zinc-800/50 pt-3">
               {agentLogs.length === 0 && !isResearching ? (
-                <div class="flex flex-col items-center justify-center h-full text-center text-zinc-600 gap-2">
-                  <BrainCircuit class="w-8 h-8 opacity-40 animate-pulse" />
+                <div className="flex flex-col items-center justify-center h-full text-center text-zinc-600 gap-2">
+                  <BrainCircuit className="w-8 h-8 opacity-40 animate-pulse" />
                   <p>Orchestrator idle. Launch a research brief to wake up agents.</p>
                 </div>
               ) : (
                 <>
                   {agentLogs.map((log, idx) => (
-                    <div key={idx} class="space-y-0.5 leading-relaxed">
-                      <div class="flex items-center gap-1.5">
-                        <span class="text-[9px] text-zinc-600">[{log.timestamp}]</span>
-                        <span class="text-indigo-400 font-extrabold">{log.agent}:</span>
+                    <div key={idx} className="space-y-0.5 leading-relaxed">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[9px] text-zinc-600">[{log.timestamp}]</span>
+                        <span className="text-indigo-400 font-extrabold">{log.agent}:</span>
                       </div>
-                      <p class="text-zinc-300 ml-4">{log.message}</p>
+                      <p className="text-zinc-300 ml-4">{log.message}</p>
                     </div>
                   ))}
                   {isResearching && (
-                    <div class="flex items-center gap-2 text-indigo-400 ml-4 font-bold mt-2">
-                      <span class="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-ping"></span>
+                    <div className="flex items-center gap-2 text-indigo-400 ml-4 font-bold mt-2">
+                      <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-ping"></span>
                       <span>{activeAgent || 'Working...'}</span>
                     </div>
                   )}
@@ -289,32 +298,32 @@ export function ResearchView({ apiFetch, user }) {
           </div>
 
           {/* Compiled Output Document Preview */}
-          <div class="glass rounded-2xl p-5 flex flex-col h-full bg-zinc-900/20 overflow-hidden relative">
-            <div class="flex items-center justify-between border-b border-zinc-800/80 pb-3 mb-3 shrink-0">
-              <h3 class="text-xs font-bold text-zinc-400 uppercase tracking-wider flex items-center gap-2">
-                <FileText class="w-4 h-4 text-emerald-400" />
+          <div className="glass rounded-2xl p-5 flex flex-col h-full bg-zinc-900/20 overflow-hidden relative">
+            <div className="flex items-center justify-between border-b border-zinc-800/80 pb-3 mb-3 shrink-0">
+              <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-wider flex items-center gap-2">
+                <FileText className="w-4 h-4 text-emerald-400" />
                 <span>Final Report</span>
               </h3>
               {(reportMarkdown || viewingTask?.result) && (
                 <button
                   onClick={copyToClipboard}
-                  class="p-1.5 rounded-lg border border-zinc-800 text-zinc-400 hover:text-white hover:bg-zinc-800/40"
+                  className="p-1.5 rounded-lg border border-zinc-800 text-zinc-400 hover:text-white hover:bg-zinc-800/40"
                   title="Copy Report to Clipboard"
                 >
-                  <Clipboard class="w-3.5 h-3.5" />
+                  <Clipboard className="w-3.5 h-3.5" />
                 </button>
               )}
             </div>
 
-            <div class="flex-1 overflow-y-auto pr-2">
+            <div className="flex-1 overflow-y-auto pr-2">
               {reportMarkdown ? (
                 renderMarkdown(reportMarkdown)
               ) : viewingTask?.result ? (
                 renderMarkdown(viewingTask.result)
               ) : (
-                <div class="flex flex-col items-center justify-center h-full text-center text-zinc-600 py-12">
-                  <FileText class="w-8 h-8 opacity-40 mb-2" />
-                  <p class="text-xs">Report output will stream here in real time...</p>
+                <div className="flex flex-col items-center justify-center h-full text-center text-zinc-600 py-12">
+                  <FileText className="w-8 h-8 opacity-40 mb-2" />
+                  <p className="text-xs">Report output will stream here in real time...</p>
                 </div>
               )}
             </div>

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, EmailStr
 from typing import Optional
@@ -14,7 +14,6 @@ class UserRegister(BaseModel):
     email: EmailStr
     password: str
     organization_name: str
-    role: str = "Viewer" # Default role, can be customized or default to Workflow Developer/Viewer
 
 class UserLogin(BaseModel):
     email: EmailStr
@@ -74,11 +73,13 @@ def register(user_in: UserRegister, db: Session = Depends(get_db)):
     db.refresh(org)
 
     # 2. Hash Password and Create User
+    # The role is decided server-side: whoever creates an organization owns it,
+    # so they become its Org Admin. Never trust a role supplied by the client.
     hashed_pwd = auth.get_password_hash(user_in.password)
     user = models.User(
         email=user_in.email,
         password_hash=hashed_pwd,
-        role=user_in.role,
+        role=auth.ROLE_ORG_ADMIN,
         organization_id=org.id,
         email_verified=False
     )
@@ -94,7 +95,7 @@ def register(user_in: UserRegister, db: Session = Depends(get_db)):
 
 @router.post("/login", response_model=TokenResponse)
 @limiter.limit("10/minute")
-def login(user_in: UserLogin, db: Session = Depends(get_db)):
+def login(request: Request, user_in: UserLogin, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.email == user_in.email).first()
     if not user or not auth.verify_password(user_in.password, user.password_hash):
         raise HTTPException(
@@ -115,7 +116,7 @@ def login(user_in: UserLogin, db: Session = Depends(get_db)):
 
 @router.post("/refresh", response_model=TokenResponse)
 @limiter.limit("30/minute")
-def refresh_token(req: RefreshRequest, db: Session = Depends(get_db)):
+def refresh_token(request: Request, req: RefreshRequest, db: Session = Depends(get_db)):
     token_obj = auth.verify_user_token(db, req.refresh_token, "refresh")
     if not token_obj:
         raise HTTPException(

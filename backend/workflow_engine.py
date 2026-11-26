@@ -8,12 +8,7 @@ from typing import Dict, Any, List, Optional
 from sqlalchemy.orm import Session
 import os
 
-try:
-    import google.generativeai as genai
-    HAS_GENAI = True
-except ImportError:
-    genai = None
-    HAS_GENAI = False
+import gemini_client
 
 from database import get_db_context
 
@@ -276,7 +271,7 @@ class WorkflowExecutionEngine:
             self.log(f"Executing LLM prompt: {resolved_prompt[:100]}...")
             
             gemini_key = os.getenv("GEMINI_API_KEY")
-            if not HAS_GENAI or not gemini_key:
+            if not gemini_key:
                 self.log("[INFO] Gemini not configured, using mock response")
                 await asyncio.sleep(1.5)
                 return {"text": f"[Mock LLM Response]: {resolved_prompt}"}
@@ -292,18 +287,20 @@ class WorkflowExecutionEngine:
                         return {"text": cached}
                     
                     self.log(f"[LLM] Trying model: {model_name}")
-                    genai.configure(api_key=gemini_key)
-                    model = genai.GenerativeModel(model_name)
                     loop = asyncio.get_event_loop()
-                    response = await loop.run_in_executor(
+                    text = await loop.run_in_executor(
                         None,
-                        lambda: model.generate_content(resolved_prompt)
+                        lambda: gemini_client.generate_content(
+                            resolved_prompt,
+                            model=model_name,
+                            api_key=gemini_key,
+                        ),
                     )
-                    
+
                     # Success - cache and return
-                    llm_cache.set(model_name, "", resolved_prompt, response.text)
-                    self.log(f"[SUCCESS] LLM response from {model_name} ({len(response.text)} chars)")
-                    return {"text": response.text}
+                    llm_cache.set(model_name, "", resolved_prompt, text)
+                    self.log(f"[SUCCESS] LLM response from {model_name} ({len(text)} chars)")
+                    return {"text": text}
                 
                 except Exception as e:
                     last_error = e

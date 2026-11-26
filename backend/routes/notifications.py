@@ -1,6 +1,4 @@
-import asyncio
-import threading
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List
@@ -53,7 +51,7 @@ def mark_as_read(
     return {"message": f"Successfully marked {len(notifications)} notifications as read."}
 
 # Utility function to add in-app notifications
-def create_notification(db: Session, user_id: int, message: str) -> models.Notification:
+async def create_notification(db: Session, user_id: int, message: str) -> models.Notification:
     notif = models.Notification(
         user_id=user_id,
         message=message,
@@ -73,5 +71,8 @@ def create_notification(db: Session, user_id: int, message: str) -> models.Notif
             "created_at": notif.created_at.isoformat()
         }
     }
-    asyncio.create_task(ws_manager.send_personal_message(payload, user_id))
+    # Await the send: this function is async, so we are already on the event
+    # loop. Calling asyncio.create_task() from sync code raised
+    # "no running event loop" whenever a worker thread used it.
+    await ws_manager.send_personal_message(payload, user_id)
     return notif

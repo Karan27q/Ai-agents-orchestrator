@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List, Optional, Any
@@ -29,6 +29,7 @@ class GlobalSearchResponse(BaseModel):
 @router.post("/semantic", response_model=List[SearchResultChunk])
 @limiter.limit("30/minute")
 def search_semantic(
+    request: Request,
     req: SemanticSearchRequest,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_user)

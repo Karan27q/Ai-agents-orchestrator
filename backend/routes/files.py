@@ -1,4 +1,3 @@
-import asyncio
 import os
 import shutil
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
@@ -7,7 +6,7 @@ from pydantic import BaseModel
 from typing import List
 import datetime
 
-from database import get_db, SessionLocal
+from database import get_db
 import models
 import auth
 import vector_store
@@ -119,8 +118,12 @@ async def upload_file(
     db.commit()
     db.refresh(doc)
 
-    # Enqueue background file processing on the async queue
-    asyncio.create_task(task_queue.enqueue_sync_task(process_file_in_background, SessionLocal, doc.id, file_path))
+    # Enqueue background file processing on the persistent task queue
+    await task_queue.enqueue_task(
+        "document_embed",
+        {"document_id": doc.id, "file_path": file_path},
+        document_id=doc.id,
+    )
 
     return doc
 

@@ -1,18 +1,18 @@
-fastapi==0.110.0
-uvicorn==0.28.0
-uvloop==0.19.0
-httptools==0.6.1
-SQLAlchemy==2.0.28
-passlib[bcrypt]==1.7.4
-PyJWT==2.8.0
-python-multipart==0.0.9
-numpy==1.26.4
-google-generativeai==0.4.1
-pgvector==1.0.0
-httpx[http2]==0.27.0
-pytest==8.1.1
-email-validator>=2.0.0
-python-dotenv==1.0.1
-slowapi==0.1.9
-psycopg2-binary>=2.9.9
-faiss-cpu>=1.7.4
+# Default install: core runtime only (SQLite backend).
+#
+#   cd backend
+#   pip install -r requirements.txt
+#
+# Add-ons:
+#   pip install -r requirements/postgres.txt   # Postgres / Supabase + pgvector
+#   pip install -r requirements/vector.txt     # faiss-cpu ANN index
+#   pip install -r requirements/dev.txt        # pytest
+#
+# The pinned *.txt files are generated from the *.in files with:
+#
+#   uv pip compile requirements/base.in --universal --generate-hashes \
+#       --python-version 3.10 -o requirements/base.txt
+#
+# (repeat for postgres / vector / dev). Install them with --require-hashes
+# to get fully reproducible, hash-verified installs.
+-r requirements/base.txt

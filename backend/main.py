@@ -19,13 +19,13 @@ try:
 except ImportError:
     HAS_SLOWAPI = False
 
-# Try to import GZIPMiddleware (optional)
+# Try to import GZipMiddleware (optional)
 try:
-    from starlette.middleware.gzip import GZIPMiddleware
+    from starlette.middleware.gzip import GZipMiddleware
     HAS_GZIP = True
 except ImportError:
     try:
-        from fastapi.middleware.gzip import GZIPMiddleware
+        from fastapi.middleware.gzip import GZipMiddleware
         HAS_GZIP = True
     except ImportError:
         HAS_GZIP = False
@@ -91,13 +91,22 @@ app.state.avg_response_time_ms = 0.0
 
 # 1. GZIP compression for responses (reduces bandwidth) - optional
 if HAS_GZIP:
-    app.add_middleware(GZIPMiddleware, minimum_size=1000)
+    app.add_middleware(GZipMiddleware, minimum_size=1000)
 
-# 2. CORS with optimized settings
+# 2. CORS. A wildcard origin cannot be combined with credentials, so wildcards
+#    are only used when credentials are explicitly not required.
+_cors_env = os.getenv("CORS_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000,http://localhost:3000,http://127.0.0.1:3000")
+_cors_origins = [origin.strip() for origin in _cors_env.split(",") if origin.strip()]
+_allow_credentials = True
+if "*" in _cors_origins:
+    _allow_credentials = False
+    if os.getenv("ENV", "development") != "development":
+        print("[CORS] WARNING: wildcard origin configured; credentials disabled.")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials=_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["X-Total-Count", "X-Page-Size"],
@@ -130,8 +139,36 @@ async def add_response_headers_and_buffer(request: Request, call_next):
     response.headers["X-Process-Time"] = str(process_time)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
-    response.headers["Cache-Control"] = "public, max-age=3600"
-    
+
+    path = request.url.path
+    if path.startswith("/api/"):
+        # Authenticated API payloads must never be cached by shared proxies.
+        response.headers["Cache-Control"] = "no-store"
+    elif path.startswith("/assets/"):
+        # Vite emits content-hashed filenames, so these are safe to pin.
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    else:
+        # index.html must be revalidated so new builds are picked up.
+        response.headers["Cache-Control"] = "no-cache"
+
+    # Content-Security-Policy for the bundled SPA. Docs endpoints are skipped
+    # because Swagger/ReDoc rely on inline scripts and a CDN bundle.
+    docs_paths = {"/docs", "/redoc", "/docs/oauth2-redirect"}
+    content_type = response.headers.get("content-type", "")
+    if path not in docs_paths and content_type.startswith("text/html"):
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; "
+            "font-src 'self' data:; "
+            "connect-src 'self'; "
+            "object-src 'none'; "
+            "base-uri 'self'; "
+            "form-action 'self'; "
+            "frame-ancestors 'none'"
+        )
+
     return response
 
 # 4. Connection keep-alive middleware for persistent connections
@@ -170,8 +207,17 @@ async def startup_tasks():
     finally:
         db.close()
 
-# Mount static files for frontend (Must be mounted after API routes)
-frontend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../frontend"))
+# Mount static files for frontend (Must be mounted after API routes).
+# Prefer the Vite build output; fall back to the source tree for local dev.
+frontend_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../frontend"))
+dist_dir = os.path.join(frontend_root, "dist")
+if os.getenv("FRONTEND_DIR"):
+    frontend_dir = os.getenv("FRONTEND_DIR")
+elif os.path.isdir(dist_dir):
+    frontend_dir = dist_dir
+else:
+    frontend_dir = frontend_root
+    print("[FRONTEND] frontend/dist not found; run `npm run build` in frontend/ for the production bundle.")
 if os.path.exists(frontend_dir):
     app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="static")
 
@@ -179,7 +225,10 @@ if __name__ == "__main__":
     import uvicorn
     
     port = int(os.getenv("PORT", 8000))
-    workers = int(os.getenv("WORKERS", 4))
+    # Keep one worker by default: the FAISS index, LLM/user/session caches and
+    # the WebSocket registry are in-process, so extra workers each get their
+    # own copy and search/notification results become inconsistent.
+    workers = int(os.getenv("WORKERS", 1))
     
     # Optimized uvicorn settings for maximum throughput
     uvicorn.run(

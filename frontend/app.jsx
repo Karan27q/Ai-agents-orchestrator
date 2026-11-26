@@ -1,17 +1,23 @@
 import React, { useState, useEffect } from 'react';
 import ReactDOM from 'react-dom/client';
-import { AuthView } from './components/auth.js';
-import { Sidebar, TopNav } from './components/dashboard.js';
-import { HomeView } from './components/home.js';
-import { WorkflowsView } from './components/workflows.js';
-import { ResearchView } from './components/research.js';
-import { FilesView } from './components/files.js';
-import { SearchView } from './components/search.js';
+import './index.css';
+import { API_URL } from './config.js';
+import { AuthView } from './components/auth.jsx';
+import { Sidebar, TopNav } from './components/dashboard.jsx';
+import { HomeView } from './components/home.jsx';
+import { WorkflowsView } from './components/workflows.jsx';
+import { ResearchView } from './components/research.jsx';
+import { FilesView } from './components/files.jsx';
+import { SearchView } from './components/search.jsx';
 
-// Base API URL
-export const API_URL = window.location.origin.includes('localhost') 
-  ? 'http://localhost:8000/api/v1' 
-  : window.location.origin + '/api/v1';
+// Remove the old Babel-in-a-service-worker registration left behind by
+// earlier versions, so returning visitors do not keep transpiling JSX.
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker
+    .getRegistrations()
+    .then(registrations => registrations.forEach(registration => registration.unregister()))
+    .catch(() => {});
+}
 
 function App() {
   const [token, setToken] = useState(localStorage.getItem('token') || '');
@@ -113,9 +119,9 @@ function App() {
 
   if (loading) {
     return (
-      <div class="flex items-center justify-center min-h-screen">
-        <div class="relative w-16 h-16">
-          <div class="absolute border-4 border-indigo-500/20 border-t-indigo-500 rounded-full w-full h-full animate-spin"></div>
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="relative w-16 h-16">
+          <div className="absolute border-4 border-indigo-500/20 border-t-indigo-500 rounded-full w-full h-full animate-spin"></div>
         </div>
       </div>
     );
@@ -143,12 +149,12 @@ function App() {
   };
 
   return (
-    <div class="flex min-h-screen overflow-hidden">
+    <div className="flex min-h-screen overflow-hidden">
       {/* Sidebar Navigation */}
       <Sidebar currentView={currentView} setCurrentView={setCurrentView} handleLogout={handleLogout} user={user} />
 
       {/* Main Content Area */}
-      <div class="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex flex-col min-w-0">
         <TopNav 
           user={user} 
           notifications={notifications} 
@@ -158,7 +164,7 @@ function App() {
           setCurrentView={setCurrentView}
         />
         
-        <main class="flex-1 overflow-y-auto p-6 md:p-8">
+        <main className="flex-1 overflow-y-auto p-6 md:p-8">
           {renderActiveView()}
         </main>
       </div>

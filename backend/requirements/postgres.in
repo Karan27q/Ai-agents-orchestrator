@@ -1,0 +1,5 @@
+# Postgres / Supabase deployment extras.
+# SQLite deployments do not need these.
+-r base.in
+psycopg2-binary>=2.9.9
+pgvector==0.5.1

@@ -22,6 +22,35 @@ REFRESH_TOKEN_EXPIRE_DAYS = 14
 PASSWORD_RESET_EXPIRE_HOURS = 2
 EMAIL_VERIFICATION_EXPIRE_HOURS = 24
 
+# Canonical role names. Everything in the app (auth, IAM, routes) must use these.
+ROLE_SUPER_ADMIN = "Super Admin"
+ROLE_ORG_ADMIN = "Org Admin"
+ROLE_RESEARCH_MANAGER = "Research Manager"
+ROLE_WORKFLOW_DEVELOPER = "Workflow Developer"
+ROLE_VIEWER = "Viewer"
+
+ROLE_HIERARCHY = {
+    ROLE_SUPER_ADMIN: 4,
+    ROLE_ORG_ADMIN: 3,
+    ROLE_RESEARCH_MANAGER: 2,
+    ROLE_WORKFLOW_DEVELOPER: 1,
+    ROLE_VIEWER: 0,
+}
+ALL_ROLES = tuple(ROLE_HIERARCHY.keys())
+ADMIN_ROLES = {ROLE_SUPER_ADMIN, ROLE_ORG_ADMIN}
+
+
+def is_admin(user: Optional[models.User]) -> bool:
+    """True for platform/org administrators."""
+    return bool(user and user.role in ADMIN_ROLES)
+
+
+def has_role_at_least(user: Optional[models.User], role: str) -> bool:
+    """Compare roles using the hierarchy rather than exact matches."""
+    if not user:
+        return False
+    return ROLE_HIERARCHY.get(user.role, -1) >= ROLE_HIERARCHY.get(role, 0)
+
 # User cache for fast lookups (thread-safe LRU cache)
 _user_cache = {}
 _cache_lock = threading.RLock()
@@ -158,20 +187,10 @@ class RoleChecker:
         self.allowed_roles = allowed_roles
 
     def __call__(self, current_user: models.User = Depends(get_current_user)) -> models.User:
-        # Hierarchical roles or simple list checking
-        role_hierarchy = {
-            "Super Admin": 4,
-            "Org Admin": 3,
-            "Research Manager": 2,
-            "Workflow Developer": 1,
-            "Viewer": 0
-        }
-        
-        user_role_level = role_hierarchy.get(current_user.role, 0)
-        
-        if current_user.role == "Super Admin":
+        # Super Admin can do anything, regardless of the allowed list.
+        if current_user.role == ROLE_SUPER_ADMIN:
             return current_user
-            
+
         if current_user.role not in self.allowed_roles:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -180,11 +199,11 @@ class RoleChecker:
         return current_user
 
 # Helper dependency injections
-def require_admin(current_user: models.User = Depends(RoleChecker(["Super Admin", "Org Admin"]))):
+def require_admin(current_user: models.User = Depends(RoleChecker([ROLE_SUPER_ADMIN, ROLE_ORG_ADMIN]))):
     return current_user
 
-def require_developer(current_user: models.User = Depends(RoleChecker(["Super Admin", "Org Admin", "Workflow Developer"]))):
+def require_developer(current_user: models.User = Depends(RoleChecker([ROLE_SUPER_ADMIN, ROLE_ORG_ADMIN, ROLE_WORKFLOW_DEVELOPER]))):
     return current_user
 
-def require_manager(current_user: models.User = Depends(RoleChecker(["Super Admin", "Org Admin", "Research Manager"]))):
+def require_manager(current_user: models.User = Depends(RoleChecker([ROLE_SUPER_ADMIN, ROLE_ORG_ADMIN, ROLE_RESEARCH_MANAGER]))):
     return current_user

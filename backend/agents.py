@@ -4,27 +4,17 @@ import asyncio
 import threading
 from typing import AsyncGenerator, Callable, List, Dict, Any, Optional
 
-try:
-    import google.generativeai as genai
-    HAS_GENAI = True
-except ImportError:
-    genai = None
-    HAS_GENAI = False
-
+import gemini_client
 import llm_cache
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 LLM_CONCURRENCY = int(os.getenv("LLM_CONCURRENCY", "3"))
 _llm_semaphore = asyncio.Semaphore(LLM_CONCURRENCY)
 
-if HAS_GENAI and GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-
 
 class ResearchAgentOrchestrator:
-    def __init__(self, model_name: str = "gemini-1.5-flash"):
+    def __init__(self, model_name: str = gemini_client.DEFAULT_MODEL):
         self.model_name = model_name
-        self.api_available = bool(GEMINI_API_KEY and HAS_GENAI)
+        self.api_available = gemini_client.is_configured()
 
     async def _call_llm(self, prompt: str, system_instruction: str = "") -> str:
         cached = llm_cache.get(self.model_name, system_instruction, prompt)
@@ -52,15 +42,15 @@ class ResearchAgentOrchestrator:
 
         async with _llm_semaphore:
             try:
-                model = genai.GenerativeModel(
-                    model_name=self.model_name,
-                    system_instruction=system_instruction,
-                )
                 loop = asyncio.get_event_loop()
-                response = await loop.run_in_executor(
-                    None, lambda: model.generate_content(prompt)
+                result = await loop.run_in_executor(
+                    None,
+                    lambda: gemini_client.generate_content(
+                        prompt,
+                        model=self.model_name,
+                        system_instruction=system_instruction,
+                    ),
                 )
-                result = response.text
                 llm_cache.set(self.model_name, system_instruction, prompt, result)
                 return result
             except Exception as e:
@@ -95,14 +85,14 @@ class ResearchAgentOrchestrator:
         def producer():
             parts: List[str] = []
             try:
-                model = genai.GenerativeModel(
-                    model_name=self.model_name,
+                for chunk in gemini_client.generate_content_stream(
+                    prompt,
+                    model=self.model_name,
                     system_instruction=system_instruction,
-                )
-                for chunk in model.generate_content(prompt, stream=True):
-                    if chunk.text:
-                        parts.append(chunk.text)
-                        asyncio.run_coroutine_threadsafe(queue.put(chunk.text), loop)
+                ):
+                    if chunk:
+                        parts.append(chunk)
+                        asyncio.run_coroutine_threadsafe(queue.put(chunk), loop)
             except Exception as e:
                 asyncio.run_coroutine_threadsafe(queue.put(f"Error: {e}"), loop)
             finally:

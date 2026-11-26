@@ -4,9 +4,12 @@ Distinguishes between transient and permanent errors for smart retry logic.
 """
 
 import json
+import os
 from enum import Enum
 from typing import Dict, Any, Optional, Tuple, List
 from datetime import datetime
+
+import gemini_client
 
 
 class ErrorCategory(Enum):
@@ -70,7 +73,7 @@ def categorize_gemini_error(error: Exception) -> Tuple[ErrorCategory, str]:
         if "model" in error_str:
             return (
                 ErrorCategory.MODEL_UNAVAILABLE,
-                f"Model not available in v1beta. Try gemini-pro or gemini-1.5-pro. Error: {error_full}",
+                f"Model not available. Check the model id against the current Gemini model list. Error: {error_full}",
             )
         return ErrorCategory.PERMANENT, f"404 Resource not found: {error_full}"
     
@@ -118,12 +121,23 @@ def categorize_http_error(status_code: int, error_body: str = "") -> Tuple[Error
         return ErrorCategory.TRANSIENT, f"HTTP error {status_code}"
 
 
-# Available Gemini models in priority order (most recent first)
-GEMINI_MODEL_FALLBACKS = [
-    "gemini-1.5-pro",       # Recommended
-    "gemini-1.5-flash",     # Fallback (free tier)
-    "gemini-pro",           # Legacy
-]
+# Available Gemini models in priority order (most capable first).
+# GEMINI_MODELS overrides the chain with a comma-separated list; otherwise the
+# configured default model is tried first, then the cheap high-throughput model.
+_models_env = os.getenv("GEMINI_MODELS", "")
+if _models_env.strip():
+    GEMINI_MODEL_FALLBACKS = [
+        model.strip() for model in _models_env.split(",") if model.strip()
+    ]
+else:
+    GEMINI_MODEL_FALLBACKS = list(
+        dict.fromkeys(
+            [
+                gemini_client.DEFAULT_MODEL,      # gemini-4-hydrogen by default
+                "gemini-3.5-flash-lite",          # fast, low-cost fallback
+            ]
+        )
+    )
 
 
 def get_available_gemini_models() -> List[str]:

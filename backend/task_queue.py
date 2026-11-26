@@ -158,121 +158,196 @@ class PersistentTaskQueue:
         error_traceback: str,
     ):
         """Handle task failure with retry logic or dead-letter routing."""
+        delay: Optional[int] = None
+
         db = SessionLocal()
         try:
             task = db.query(models.QueueTask).filter(models.QueueTask.id == task_id).first()
             if not task:
                 return
-            
+
             task.error_message = error_message
             task.error_traceback = error_traceback
             task.retry_count += 1
-            
+
             if task.retry_count < task.max_retries:
                 # Calculate exponential backoff: 5s, 25s, 125s (max 5min)
                 delay = min(
                     RETRY_BASE_DELAY ** task.retry_count,
                     MAX_RETRY_DELAY,
                 )
-                task.status = "pending"
+                # Keep the task out of the "pending" pool while we back off,
+                # otherwise another worker immediately picks it up again.
+                task.status = "retrying"
                 task.started_at = None
+                task.progress_message = f"Retry {task.retry_count}/{task.max_retries} in {delay}s"
                 print(f"[QUEUE] Task {task_id} will retry in {delay}s (attempt {task.retry_count}/{task.max_retries})")
-                
-                # Schedule retry
                 db.commit()
-                await asyncio.sleep(delay)
             else:
                 # Max retries exhausted -> dead-letter queue
                 task.status = "dead_letter"
                 task.completed_at = datetime.utcnow()
+                webhook_url = task.webhook_url
                 print(f"[QUEUE] Task {task_id} moved to dead-letter queue after {task.retry_count} retries")
-                
-                if task.webhook_url:
+                db.commit()
+
+                if webhook_url:
                     await self._send_webhook(
-                        task.webhook_url,
+                        webhook_url,
                         "dead_letter",
                         task_id,
                         {"error": error_message, "retries": task.retry_count},
                     )
-            
-            db.commit()
         finally:
             db.close()
-    
-    async def _execute_task(self, task_id: int, task_func: Callable, *args, **kwargs):
-        """Execute a task with timeout handling."""
+
+        if delay is None:
+            return
+
+        # Back off without holding a database session open.
+        await asyncio.sleep(delay)
+
         db = SessionLocal()
         try:
             task = db.query(models.QueueTask).filter(models.QueueTask.id == task_id).first()
-            if not task:
-                print(f"[QUEUE] Task {task_id} not found")
-                return
-            
-            # Mark as running
-            task.status = "running"
-            task.started_at = datetime.utcnow()
-            db.commit()
-            db.close()
-            
-            try:
-                # Execute with timeout
-                result = await asyncio.wait_for(
-                    task_func(*args, **kwargs),
-                    timeout=task.timeout_seconds,
-                )
-                await self._handle_task_completion(task_id, result)
-            
-            except asyncio.TimeoutError:
-                error_msg = f"Task exceeded timeout of {task.timeout_seconds}s"
-                print(f"[QUEUE] {error_msg}")
-                await self._handle_task_failure(task_id, error_msg, "TimeoutError")
-            
-            except Exception as e:
-                error_msg = str(e)
-                error_tb = traceback.format_exc()
-                print(f"[QUEUE] Task {task_id} error: {error_msg}")
-                await self._handle_task_failure(task_id, error_msg, error_tb)
-        
-        except Exception as e:
-            print(f"[QUEUE] Fatal error in task execution: {e}")
+            if task and task.status == "retrying":
+                task.status = "pending"
+                task.progress_message = "Queued for retry"
+                db.commit()
         finally:
-            if db:
-                db.close()
+            db.close()
+
+    async def _execute_task(self, task_id: int, timeout_seconds: int, task_func: Callable, *args, **kwargs):
+        """Execute a task that has already been atomically claimed by a worker."""
+        try:
+            # Execute with timeout
+            result = await asyncio.wait_for(
+                task_func(*args, **kwargs),
+                timeout=timeout_seconds,
+            )
+            await self._handle_task_completion(task_id, result)
+
+        except asyncio.TimeoutError:
+            error_msg = f"Task exceeded timeout of {timeout_seconds}s"
+            print(f"[QUEUE] {error_msg}")
+            await self._handle_task_failure(task_id, error_msg, "TimeoutError")
+
+        except Exception as e:
+            error_msg = str(e)
+            error_tb = traceback.format_exc()
+            print(f"[QUEUE] Task {task_id} error: {error_msg}")
+            await self._handle_task_failure(task_id, error_msg, error_tb)
     
+    async def _claim_next_task(self) -> Optional[Dict[str, Any]]:
+        """
+        Atomically claim the oldest pending task.
+
+        The conditional UPDATE is what makes this safe with several workers:
+        only one of them can flip a given row from "pending" to "running".
+        """
+        db = SessionLocal()
+        try:
+            candidate = (
+                db.query(models.QueueTask)
+                .filter(models.QueueTask.status == "pending")
+                .order_by(models.QueueTask.created_at)
+                .first()
+            )
+            if not candidate:
+                return None
+
+            task_id = candidate.id
+            task_type = candidate.task_type
+            payload_raw = candidate.payload
+            timeout_seconds = candidate.timeout_seconds or 300
+
+            claimed = (
+                db.query(models.QueueTask)
+                .filter(
+                    models.QueueTask.id == task_id,
+                    models.QueueTask.status == "pending",
+                )
+                .update(
+                    {"status": "running", "started_at": datetime.utcnow()},
+                    synchronize_session=False,
+                )
+            )
+            db.commit()
+
+            if not claimed:
+                return None
+
+            return {
+                "id": task_id,
+                "task_type": task_type,
+                "payload": payload_raw,
+                "timeout_seconds": timeout_seconds,
+            }
+        finally:
+            db.close()
+
+    async def recover_stuck_tasks(self):
+        """
+        Reset tasks abandoned by a crashed/restarted worker.
+
+        Anything left in "running" past its timeout, or parked in "retrying"
+        by a worker that died during the backoff, goes back to "pending".
+        """
+        db = SessionLocal()
+        try:
+            now = datetime.utcnow()
+            stuck = (
+                db.query(models.QueueTask)
+                .filter(models.QueueTask.status.in_(["running", "retrying"]))
+                .all()
+            )
+            recovered = 0
+            for task in stuck:
+                if task.status == "retrying":
+                    task.status = "pending"
+                    task.started_at = None
+                    recovered += 1
+                    continue
+
+                if task.started_at is None:
+                    continue
+
+                deadline = task.started_at + timedelta(seconds=task.timeout_seconds or 300)
+                if now > deadline:
+                    task.status = "pending"
+                    task.started_at = None
+                    recovered += 1
+
+            if recovered:
+                db.commit()
+                print(f"[QUEUE] Recovered {recovered} abandoned task(s)")
+        finally:
+            db.close()
+
     async def process_pending_tasks(self):
         """
-        Worker loop: continuously process pending tasks from database.
+        Worker loop: continuously claim and process pending tasks from database.
         Handles retries by re-querying pending tasks.
         """
         print(f"[QUEUE] Worker started (processing pending tasks)")
-        
+
         while True:
             try:
-                db = SessionLocal()
-                
-                # Fetch next pending task
-                pending_task = (
-                    db.query(models.QueueTask)
-                    .filter(models.QueueTask.status == "pending")
-                    .order_by(models.QueueTask.created_at)
-                    .first()
-                )
-                
-                db.close()
-                
-                if not pending_task:
+                claimed = await self._claim_next_task()
+                if not claimed:
                     # No pending tasks, wait and retry
                     await asyncio.sleep(1)
                     continue
-                
-                task_id = pending_task.id
-                task_type = pending_task.task_type
-                
+
+                task_id = claimed["id"]
+                task_type = claimed["task_type"]
+                timeout_seconds = claimed["timeout_seconds"]
+
                 print(f"[QUEUE] Processing task {task_id} (type: {task_type})")
-                
+
                 # Deserialize payload
                 try:
-                    payload = json.loads(pending_task.payload)
+                    payload = json.loads(claimed["payload"])
                 except json.JSONDecodeError:
                     await self._handle_task_failure(
                         task_id,
@@ -280,17 +355,19 @@ class PersistentTaskQueue:
                         "JSONDecodeError",
                     )
                     continue
-                
+
                 # Route to appropriate handler
                 if task_type == "workflow_run":
                     await self._execute_task(
                         task_id,
+                        timeout_seconds,
                         self._handle_workflow_run,
                         payload,
                     )
                 elif task_type == "document_embed":
                     await self._execute_task(
                         task_id,
+                        timeout_seconds,
                         self._handle_document_embed,
                         payload,
                     )
@@ -300,7 +377,7 @@ class PersistentTaskQueue:
                         f"Unknown task type: {task_type}",
                         "UnknownTaskType",
                     )
-            
+
             except Exception as e:
                 print(f"[QUEUE] Worker error: {e}")
                 await asyncio.sleep(1)
@@ -316,11 +393,25 @@ class PersistentTaskQueue:
         return {"workflow_run_id": workflow_run_id, "status": "completed"}
     
     async def _handle_document_embed(self, payload: Dict[str, Any]):
-        """Example document embedding handler - extend as needed."""
+        """Extract, chunk and embed an uploaded document."""
         document_id = payload.get("document_id")
-        print(f"[TASK] Embedding document {document_id}")
-        # In real implementation: call embedding service
-        await asyncio.sleep(1)
+        file_path = payload.get("file_path")
+
+        if document_id is None or not file_path:
+            raise ValueError("document_embed payload requires 'document_id' and 'file_path'")
+
+        # Imported lazily: routes.files imports task_queue, so a module-level
+        # import here would create a circular dependency.
+        from routes.files import process_file_in_background
+
+        # process_file_in_background is blocking (file I/O + embeddings),
+        # so run it in a worker thread instead of blocking the event loop.
+        await asyncio.to_thread(
+            process_file_in_background,
+            SessionLocal,
+            document_id,
+            file_path,
+        )
         return {"document_id": document_id, "embedding_status": "completed"}
 
 
@@ -376,7 +467,10 @@ async def start_queue_workers():
     """Start the persistent task queue worker processes."""
     print(f"[QUEUE] Starting {WORKER_COUNT} workers...")
     queue = await get_queue()
-    
+
+    # Requeue anything a previous process left behind before accepting new work.
+    await queue.recover_stuck_tasks()
+
     # Start worker tasks
     for i in range(WORKER_COUNT):
         asyncio.create_task(queue.process_pending_tasks())
